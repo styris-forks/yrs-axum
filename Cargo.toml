@@ -13,17 +13,17 @@ readme = "./README.md"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-yrs = "0.18.2"
+yrs = { version = "0.25.0", features = ["sync"] }
 futures-util = { version = "0.3", features = ["sink"] }
-tokio = { version = "1.36", features = ["rt", "net", "sync", "macros"] }
+tokio = { version = "1.50", features = ["rt", "net", "sync", "macros"] }
 serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = "1.0"
 tracing = { version = "0.1", features = ["log"] }
-tokio-util = { version = "0.7.10", features = ["codec"] }
-axum = {version="0.8.1", features=["ws"]}
-bytes = "1.6"
+tokio-util = { version = "0.7.18", features = ["codec"] }
+axum = { version = "0.8.8", features = ["ws"] }
+bytes = "1.11"
 
 [dev-dependencies]
-tokio-tungstenite = "0.21"
+tokio-tungstenite = "0.29"
 tokio = { version = "1", features = ["full"] }
-tower-http = {version="0.6.2", features=["fs"]}
+tower-http = { version = "0.6.8", features = ["fs"] }

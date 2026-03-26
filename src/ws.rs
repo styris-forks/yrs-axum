@@ -364,7 +364,7 @@ mod test {
             let result = ready!(stream.poll_next(cx));
             match result {
                 None => Poll::Ready(None),
-                Some(Ok(msg)) => Poll::Ready(Some(Ok(msg.into_data()))),
+                Some(Ok(msg)) => Poll::Ready(Some(Ok(msg.into_data().to_vec()))),
                 Some(Err(e)) => Poll::Ready(Some(Err(Error::Other(Box::new(e))))),
             }
         }

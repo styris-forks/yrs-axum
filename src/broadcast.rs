@@ -59,7 +59,7 @@ impl BroadcastGroup {
         };
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let sink = sender.clone();
-        let awareness_sub = lock.on_update(move |e| {
+        let awareness_sub = lock.on_update(move |_awareness, e, _origin| {
             let added = e.added();
             let updated = e.updated();
             let removed = e.removed();
@@ -337,8 +337,8 @@ mod test {
 
         // check awareness update propagation
         {
-            let mut a = awareness.write().await;
-            a.set_local_state(r#"{"key":"value"}"#)
+            let a = awareness.write().await;
+            a.set_local_state(r#"{"key":"value"}"#)?
         }
 
         let msg = client_receiver.next().await;
@@ -350,7 +350,7 @@ mod test {
                     1,
                     AwarenessUpdateEntry {
                         clock: 1,
-                        json: r#"{"key":"value"}"#.to_string(),
+                        json: r#""{\"key\":\"value\"}""#.into(),
                     },
                 )]),
             }))
