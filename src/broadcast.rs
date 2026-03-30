@@ -159,7 +159,7 @@ impl BroadcastGroup {
                 while let Ok(msg) = receiver.recv().await {
                     let mut sink = sink.lock().await;
                     if let Err(e) = sink.send(msg).await {
-                        println!("broadcast failed to sent sync message");
+                        // println!("broadcast failed to send sync message");
                         return Err(Error::Other(Box::new(e)));
                     }
                 }
