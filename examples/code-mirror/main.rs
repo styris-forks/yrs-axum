@@ -1,6 +1,6 @@
 use futures_util::StreamExt;
 use std::sync::Arc;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex};
 use axum::{
     extract::{ws::{WebSocket, WebSocketUpgrade}, State}, 
     response::IntoResponse, 
@@ -31,7 +31,7 @@ async fn main() {
 }"#,
             );
         }
-        Arc::new(RwLock::new(Awareness::new(doc)))
+        Arc::new(Awareness::new(doc))
     };
 
     // open a broadcast group that listens to awareness and document updates

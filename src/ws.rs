@@ -64,7 +64,7 @@ impl core::future::Future for AxumConn {
 /// ) -> Result<JoinHandle<()>, Box<dyn std::error::Error>> {
 ///     let addr = SocketAddr::from_str(addr)?;
 ///     let listener = tokio::net::TcpListener::bind(addr).await?;
-///     
+///
 ///     let app = Router::new()
 ///         .route("/my-room", get(ws_handler))
 ///         .with_state(bcast);
@@ -177,7 +177,7 @@ impl futures_util::Sink<Vec<u8>> for AxumSink {
 /// ) -> Result<JoinHandle<()>, Box<dyn std::error::Error>> {
 ///     let addr = SocketAddr::from_str(addr)?;
 ///     let listener = tokio::net::TcpListener::bind(addr).await?;
-///     
+///
 ///     let app = Router::new()
 ///         .route("/my-room", get(ws_handler))
 ///         .with_state(bcast);
@@ -252,7 +252,7 @@ mod test {
     use std::task::{Context, Poll};
     use std::time::Duration;
     use tokio::net::TcpStream;
-    use tokio::sync::{Mutex, Notify, RwLock};
+    use tokio::sync::{Mutex, Notify};
     use tokio::task;
     use tokio::task::JoinHandle;
     use tokio::time::{sleep, timeout};
@@ -274,7 +274,7 @@ mod test {
         bcast: Arc<BroadcastGroup>,
     ) -> Result<JoinHandle<()>, Box<dyn std::error::Error>> {
         let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-        
+
         let app = Router::new()
             .route("/my-room", get(ws_handler))
             .with_state(bcast);
@@ -379,7 +379,7 @@ mod test {
         let sink = TungsteniteSink(sink);
         let stream = TungsteniteStream(stream);
         Ok(Connection::new(
-            Arc::new(RwLock::new(Awareness::new(doc))),
+            Arc::new(Awareness::new(doc)),
             sink,
             stream,
         ))
@@ -401,7 +401,7 @@ mod test {
     async fn change_introduced_by_server_reaches_subscribed_clients() {
         let doc = Doc::with_client_id(1);
         let text = doc.get_or_insert_text("test");
-        let awareness = Arc::new(RwLock::new(Awareness::new(doc)));
+        let awareness = Arc::new(Awareness::new(doc));
         let bcast = BroadcastGroup::new(awareness.clone(), 10).await;
         let _server = start_server("0.0.0.0:16600", Arc::new(bcast)).await.unwrap();
 
@@ -410,15 +410,13 @@ mod test {
         let c1 = client("ws://localhost:16600/my-room", doc).await.unwrap();
 
         {
-            let lock = awareness.write().await;
-            text.push(&mut lock.doc().transact_mut(), "abc");
+            text.push(&mut awareness.doc().transact_mut(), "abc");
         }
 
         timeout(TIMEOUT, n.notified()).await.unwrap();
 
         {
-            let awareness = c1.awareness().read().await;
-            let doc = awareness.doc();
+            let doc = c1.awareness().doc();
             let text = doc.get_or_insert_text("test");
             let str = text.get_string(&doc.transact());
             assert_eq!(str, "abc".to_string());
@@ -432,7 +430,7 @@ mod test {
 
         text.push(&mut doc.transact_mut(), "abc");
 
-        let awareness = Arc::new(RwLock::new(Awareness::new(doc)));
+        let awareness = Arc::new(Awareness::new(doc));
         let bcast = BroadcastGroup::new(awareness.clone(), 10).await;
         let _server = start_server("0.0.0.0:16601", Arc::new(bcast)).await.unwrap();
 
@@ -443,8 +441,7 @@ mod test {
         timeout(TIMEOUT, n.notified()).await.unwrap();
 
         {
-            let awareness = c1.awareness().read().await;
-            let doc = awareness.doc();
+            let doc = c1.awareness().doc();
             let text = doc.get_or_insert_text("test");
             let str = text.get_string(&doc.transact());
             assert_eq!(str, "abc".to_string());
@@ -456,7 +453,7 @@ mod test {
         let doc = Doc::with_client_id(1);
         let _ = doc.get_or_insert_text("test");
 
-        let awareness = Arc::new(RwLock::new(Awareness::new(doc)));
+        let awareness = Arc::new(Awareness::new(doc));
         let bcast = BroadcastGroup::new(awareness.clone(), 10).await;
         let _server = start_server("0.0.0.0:16602", Arc::new(bcast)).await.unwrap();
 
@@ -465,8 +462,7 @@ mod test {
         // by default changes made by document on the client side are not propagated automatically
         let _sub11 = {
             let sink = c1.sink();
-            let a = c1.awareness().write().await;
-            let doc = a.doc();
+            let doc = c1.awareness().doc();
             doc.observe_update_v1(move |_, e| {
                 let update = e.update.to_owned();
                 if let Some(sink) = sink.upgrade() {
@@ -486,8 +482,7 @@ mod test {
         let c2 = client("ws://localhost:16602/my-room", d2).await.unwrap();
 
         {
-            let a = c1.awareness().write().await;
-            let doc = a.doc();
+            let doc = c1.awareness().doc();
             let text = doc.get_or_insert_text("test");
             text.push(&mut doc.transact_mut(), "def");
         }
@@ -495,8 +490,7 @@ mod test {
         timeout(TIMEOUT, n2.notified()).await.unwrap();
 
         {
-            let awareness = c2.awareness().read().await;
-            let doc = awareness.doc();
+            let doc = c2.awareness().doc();
             let text = doc.get_or_insert_text("test");
             let str = text.get_string(&doc.transact());
             assert_eq!(str, "def".to_string());
@@ -508,7 +502,7 @@ mod test {
         let doc = Doc::with_client_id(1);
         let _text = doc.get_or_insert_text("test");
 
-        let awareness = Arc::new(RwLock::new(Awareness::new(doc)));
+        let awareness = Arc::new(Awareness::new(doc));
         let bcast = BroadcastGroup::new(awareness.clone(), 10).await;
         let _server = start_server("0.0.0.0:16603", Arc::new(bcast)).await.unwrap();
 
@@ -517,8 +511,7 @@ mod test {
         // by default changes made by document on the client side are not propagated automatically
         let _sub11 = {
             let sink = c1.sink();
-            let a = c1.awareness().write().await;
-            let doc = a.doc();
+            let doc = c1.awareness().doc();
             doc.observe_update_v1(move |_, e| {
                 let update = e.update.to_owned();
                 if let Some(sink) = sink.upgrade() {
@@ -542,27 +535,22 @@ mod test {
         let c3 = client("ws://localhost:16603/my-room", d3).await.unwrap();
 
         {
-            let a = c1.awareness().write().await;
-            let doc = a.doc();
+            let doc = c1.awareness().doc();
             let text = doc.get_or_insert_text("test");
             text.push(&mut doc.transact_mut(), "abc");
         }
 
         // on the first try both C2 and C3 should receive the update
-        //timeout(TIMEOUT, n2.notified()).await.unwrap();
-        //timeout(TIMEOUT, n3.notified()).await.unwrap();
         sleep(TIMEOUT).await;
 
         {
-            let awareness = c2.awareness().read().await;
-            let doc = awareness.doc();
+            let doc = c2.awareness().doc();
             let text = doc.get_or_insert_text("test");
             let str = text.get_string(&doc.transact());
             assert_eq!(str, "abc".to_string());
         }
         {
-            let awareness = c3.awareness().read().await;
-            let doc = awareness.doc();
+            let doc = c3.awareness().doc();
             let text = doc.get_or_insert_text("test");
             let str = text.get_string(&doc.transact());
             assert_eq!(str, "abc".to_string());
@@ -577,14 +565,12 @@ mod test {
         drop(sub2);
 
         let (n2, _sub2) = {
-            let a = c2.awareness().write().await;
-            let doc = a.doc();
+            let doc = c2.awareness().doc();
             create_notifier(doc)
         };
 
         {
-            let a = c1.awareness().write().await;
-            let doc = a.doc();
+            let doc = c1.awareness().doc();
             let text = doc.get_or_insert_text("test");
             text.push(&mut doc.transact_mut(), "def");
         }
@@ -592,8 +578,7 @@ mod test {
         timeout(TIMEOUT, n2.notified()).await.unwrap();
 
         {
-            let awareness = c2.awareness().read().await;
-            let doc = awareness.doc();
+            let doc = c2.awareness().doc();
             let text = doc.get_or_insert_text("test");
             let str = text.get_string(&doc.transact());
             assert_eq!(str, "abcdef".to_string());

@@ -40,10 +40,10 @@ impl BroadcastGroup {
     pub async fn new(awareness: AwarenessRef, buffer_capacity: usize) -> Self {
         let (sender, receiver) = channel(buffer_capacity);
         let awareness_c = Arc::downgrade(&awareness);
-        let mut lock = awareness.write().await;
         let sink = sender.clone();
         let doc_sub = {
-            lock.doc_mut()
+            awareness
+                .doc()
                 .observe_update_v1(move |_txn, u| {
                     // we manually construct msg here to avoid update data copying
                     let mut encoder = EncoderV1::new();
@@ -59,27 +59,19 @@ impl BroadcastGroup {
         };
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let sink = sender.clone();
-        let awareness_sub = lock.on_update(move |_awareness, e, _origin| {
-            let added = e.added();
-            let updated = e.updated();
-            let removed = e.removed();
-            let mut changed = Vec::with_capacity(added.len() + updated.len() + removed.len());
-            changed.extend_from_slice(added);
-            changed.extend_from_slice(updated);
-            changed.extend_from_slice(removed);
-
-            if let Err(_) = tx.send(changed) {
+        let awareness_sub = awareness.on_update(move |_awareness, e, _origin| {
+            let changed = e.all_changes();
+            if tx.send(changed).is_err() {
                 tracing::warn!("failed to send awareness update");
             }
         });
-        drop(lock);
+
         let awareness_updater = tokio::task::spawn(async move {
             while let Some(changed_clients) = rx.recv().await {
                 if let Some(awareness) = awareness_c.upgrade() {
-                    let awareness = awareness.read().await;
                     match awareness.update_with_clients(changed_clients) {
                         Ok(update) => {
-                            if let Err(_) = sink.send(Message::Awareness(update).encode_v1()) {
+                            if sink.send(Message::Awareness(update).encode_v1()).is_err() {
                                 tracing::warn!("couldn't broadcast awareness update");
                             }
                         }
@@ -159,7 +151,6 @@ impl BroadcastGroup {
                 while let Ok(msg) = receiver.recv().await {
                     let mut sink = sink.lock().await;
                     if let Err(e) = sink.send(msg).await {
-                        // println!("broadcast failed to send sync message");
                         return Err(Error::Other(Box::new(e)));
                     }
                 }
@@ -168,7 +159,17 @@ impl BroadcastGroup {
         };
         let stream_task = {
             let awareness = self.awareness().clone();
+
             tokio::spawn(async move {
+                let payload = {
+                    let mut encoder = EncoderV1::new();
+                    protocol.start(&awareness, &mut encoder)?;
+                    encoder.to_vec()
+                };
+                if !payload.is_empty() {
+                    let mut s = sink.lock().await;
+                    s.send(payload).await.map_err(|e| Error::Other(e.into()))?;
+                }
                 while let Some(res) = stream.next().await {
                     let msg = Message::decode_v1(&res.map_err(|e| Error::Other(Box::new(e)))?)?;
                     let reply = Self::handle_msg(&protocol, &awareness, msg).await?;
@@ -200,36 +201,21 @@ impl BroadcastGroup {
         match msg {
             Message::Sync(msg) => match msg {
                 SyncMessage::SyncStep1(state_vector) => {
-                    let awareness = awareness.read().await;
-                    protocol.handle_sync_step1(&*awareness, state_vector)
+                    protocol.handle_sync_step1(&awareness, state_vector)
                 }
                 SyncMessage::SyncStep2(update) => {
-                    let mut awareness = awareness.write().await;
                     let update = Update::decode_v1(&update)?;
-                    protocol.handle_sync_step2(&mut *awareness, update)
+                    protocol.handle_sync_step2(&awareness, update)
                 }
                 SyncMessage::Update(update) => {
-                    let mut awareness = awareness.write().await;
                     let update = Update::decode_v1(&update)?;
-                    protocol.handle_sync_step2(&mut *awareness, update)
+                    protocol.handle_update(&awareness, update)
                 }
             },
-            Message::Auth(deny_reason) => {
-                let awareness = awareness.read().await;
-                protocol.handle_auth(&*awareness, deny_reason)
-            }
-            Message::AwarenessQuery => {
-                let awareness = awareness.read().await;
-                protocol.handle_awareness_query(&*awareness)
-            }
-            Message::Awareness(update) => {
-                let mut awareness = awareness.write().await;
-                protocol.handle_awareness_update(&mut *awareness, update)
-            }
-            Message::Custom(tag, data) => {
-                let mut awareness = awareness.write().await;
-                protocol.missing_handle(&mut *awareness, tag, data)
-            }
+            Message::Auth(deny_reason) => protocol.handle_auth(&awareness, deny_reason),
+            Message::AwarenessQuery => protocol.handle_awareness_query(&awareness),
+            Message::Awareness(update) => protocol.handle_awareness_update(&awareness, update),
+            Message::Custom(tag, data) => protocol.missing_handle(&awareness, tag, data),
         }
     }
 }
@@ -272,13 +258,13 @@ mod test {
     use std::pin::Pin;
     use std::sync::Arc;
     use std::task::{Context, Poll};
-    use tokio::sync::{Mutex, RwLock};
+    use tokio::sync::Mutex;
     use tokio_util::sync::PollSender;
     use yrs::sync::awareness::AwarenessUpdateEntry;
     use yrs::sync::{Awareness, AwarenessUpdate, Error, Message, SyncMessage};
     use yrs::updates::decoder::Decode;
     use yrs::updates::encoder::Encode;
-    use yrs::{Doc, StateVector, Text, Transact};
+    use yrs::{ClientID, Doc, StateVector, Text, Transact};
 
     #[derive(Debug)]
     pub struct ReceiverStream<T> {
@@ -314,17 +300,28 @@ mod test {
     async fn broadcast_changes() -> Result<(), Box<dyn std::error::Error>> {
         let doc = Doc::with_client_id(1);
         let text = doc.get_or_insert_text("test");
-        let awareness = Arc::new(RwLock::new(Awareness::new(doc)));
+        let awareness = Arc::new(Awareness::new(doc));
         let group = BroadcastGroup::new(awareness.clone(), 1).await;
 
         let (server_sender, mut client_receiver) = test_channel(1);
         let (mut client_sender, server_receiver) = test_channel(1);
         let _sub1 = group.subscribe(Arc::new(Mutex::new(server_sender)), server_receiver);
 
+        // Consume the initial SyncStep1 + Awareness payload sent by protocol.start()
+        let init_msg = client_receiver
+            .next()
+            .await
+            .expect("should receive initial sync message")
+            .map(|data| Message::decode_v1(&data).unwrap());
+        assert!(
+            matches!(init_msg, Ok(Message::Sync(SyncMessage::SyncStep1(_)))),
+            "first message should be SyncStep1, got: {:?}",
+            init_msg
+        );
+
         // check update propagation
         {
-            let a = awareness.write().await;
-            text.push(&mut a.doc().transact_mut(), "a");
+            text.push(&mut awareness.doc().transact_mut(), "a");
         }
         let msg = client_receiver.next().await;
         let msg = msg.map(|x| Message::decode_v1(&x.unwrap()).unwrap());
@@ -336,10 +333,7 @@ mod test {
         );
 
         // check awareness update propagation
-        {
-            let a = awareness.write().await;
-            a.set_local_state(r#"{"key":"value"}"#)?
-        }
+        awareness.set_local_state(r#"{"key":"value"}"#)?;
 
         let msg = client_receiver.next().await;
         let msg = msg.map(|x| Message::decode_v1(&x.unwrap()).unwrap());
@@ -347,7 +341,7 @@ mod test {
             msg,
             Some(Message::Awareness(AwarenessUpdate {
                 clients: HashMap::from([(
-                    1,
+                    ClientID::new(1),
                     AwarenessUpdateEntry {
                         clock: 1,
                         json: r#""{\"key\":\"value\"}""#.into(),
